@@ -12,7 +12,10 @@ This PowerShell script, `Check-TagsAndAssignBackupPolicy`, is designed to automa
 ## Prerequisites
 
 - **Azure PowerShell Module:** Ensure that the Azure PowerShell module is installed and up to date.
-- **Custom Module:** The script expects a custom module located at `./scripts/modules/*.psm1`. This module should contain the function `Get-RecoveryServicesVaultAndBackupPolicies`.
+- **Custom Module:** The script expects a custom module located at
+  `./scripts/modules/*.psm1`
+
+  This module should contain the function `Get-RecoveryServicesVaultAndBackupPolicies`.
 
 ## Usage
 
