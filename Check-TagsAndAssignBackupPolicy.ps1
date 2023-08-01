@@ -14,7 +14,7 @@ function Check-TagsAndAssignBackupPolicy {
   foreach ($Subscription in $Subscriptions) {
 
     # Import Module
-    Import-Module -Name ./scripts/modules/*.psm1 -Force
+    Import-Module -Name ./modules/*.psm1 -Force
 
     # Select the subscription
     Set-AzContext -Subscription $Subscription.Id | Out-Null
