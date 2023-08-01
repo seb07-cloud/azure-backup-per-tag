@@ -1,218 +1,134 @@
 function Check-TagsAndAssignBackupPolicy {
-    param(
-        [string]$LawWorkspaceName,
-        [string]$LawResourceGroup
-    )
+  param(
+    [Parameter(Mandatory = $false)]
+    [string[]]$ExcludedSubscriptionIds = @()
+  )
 
-    # Get all subscriptions
-    $Subscriptions = Get-AzSubscription
+  # Get all subscriptions excluding the ones provided in the excluded list
+  $Subscriptions = Get-AzSubscription | Where-Object { $ExcludedSubscriptionIds -notcontains $_.Id }
 
-    # Loop through each subscription
-    foreach ($Subscription in $Subscriptions) {
-        Set-AzContext -Subscription $Subscription.Id | Out-Null
+  # Create an empty array to store the VM information
+  $VmInfoArray = @()
 
-        # Get all VMs in the subscription
-        $Vms = Get-AzVM
+  # Loop through each subscription
+  foreach ($Subscription in $Subscriptions) {
 
-        # Loop through each VM
-        foreach ($Vm in $Vms) {
+    # Import Module
+    Import-Module -Name ./scripts/modules/*.psm1 -Force
 
-            # Get the VM location
-            $VmLocation = $Vm.Location
+    # Select the subscription
+    Set-AzContext -Subscription $Subscription.Id | Out-Null
 
-            # Check if the "RecoveryServicesVault" and "BackupPolicy" tags are defined on the VM
-            if ($Vm.Tags.RecoveryServicesVault -and $Vm.Tags.BackupPolicy) {
+    # Get all VMs in the subscription
+    $Vms = Get-AzVM
 
-                # Get the name of the Recovery Services Vault and the backup policy from the VM tags
-                $RecoveryServicesVaultName = $Vm.Tags.RecoveryServicesVault
-                $BackupPolicyName = $Vm.Tags.BackupPolicy
+    # Loop through each VM
+    foreach ($Vm in $Vms) {
 
-                # Get the Recovery Services Vault with the given name in the VM location
-                try {
-                    $VaultAndPolicies = Get-RecoveryServicesVaultAndBackupPolicies -ResourceGroupName $LawResourceGroup -VaultName $RecoveryServicesVaultName -ErrorAction Stop
-                }
-                catch {
-                    $ErrorMessage = "Failed to get Recovery Services Vault and backup policies: $($_.Exception.Message)"
-                    Write-Error $ErrorMessage
-                    Write-LogAnalytics -WorkspaceId $LogAnalyticsWorkspaceId -SharedKey $LogAnalyticsSharedKey -LawWorkspaceName $LawWorkspaceName -LawResourcegroup $LawResourceGroup -ErrorMessage $ErrorMessage
-                    continue
-                }
+      # Create a custom object for the VM
+      $VmInfo = New-Object PSObject
+      $VmInfo | Add-Member -MemberType NoteProperty -Name "VmName" -Value $Vm.Name
+      $VmInfo | Add-Member -MemberType NoteProperty -Name "BackupPolicy" -Value $null
+      $VmInfo | Add-Member -MemberType NoteProperty -Name "IsProtected" -Value $false
+      $VmInfo | Add-Member -MemberType NoteProperty -Name "RecoveryServicesVault" -Value $null
+      $VmInfo | Add-Member -MemberType NoteProperty -Name "Subscription" -Value $Subscription.Name
 
-                $RecoveryServicesVault = $VaultAndPolicies.RecoveryServicesVault
-                $BackupPolicies = $VaultAndPolicies.BackupPolicies
+      # Get the VM location
+      $VmLocation = $Vm.Location
 
-                # Check if the Recovery Services Vault was found
-                if ($RecoveryServicesVault -eq $null) {
-                    $ErrorMessage = "Recovery Services Vault '$RecoveryServicesVaultName' not found in location '$VmLocation'"
-                    Write-Error $ErrorMessage
-                    Write-LogAnalytics -WorkspaceId $LogAnalyticsWorkspaceId -SharedKey $LogAnalyticsSharedKey -LawWorkspaceName $LawWorkspaceName -LawResourcegroup $LawResourceGroup -ErrorMessage $ErrorMessage
-                    continue
-                }
+      # Check if the "RecoveryServicesVault" and "BackupPolicy" tags are defined on the VM
+      if ($Vm.Tags.RecoveryServicesVault -and $Vm.Tags.BackupPolicy) {
 
-                # Get the backup policy with the given name in the Recovery Services Vault
-                try {
-                    $Policy = $BackupPolicies | Where-Object { $_.Name -eq $BackupPolicyName }
-                    $BackupPolicy = Get-AzRecoveryServicesBackupProtectionPolicy -Vault $RecoveryServicesVault.Id -Name $Policy.Name -ErrorAction Stop
-                }
-                catch {
-                    $ErrorMessage = "Failed to get backup policy: $($_.Exception.Message)"
-                    Write-Error $ErrorMessage
-                    Write-LogAnalytics -WorkspaceId $LogAnalyticsWorkspaceId -SharedKey $LogAnalyticsSharedKey -LawWorkspaceName $LawWorkspaceName -LawResourcegroup $LawResourceGroup -ErrorMessage $ErrorMessage
-                    continue
-                }
+        # Get the name of the Recovery Services Vault and the backup policy from the VM tags
+        $RecoveryServicesVaultName = $Vm.Tags.RecoveryServicesVault
+        $BackupPolicyName = $Vm.Tags.BackupPolicy
 
-                # Check if the backup policy was found
-                if ($BackupPolicy -eq $null) {
-                    $ErrorMessage = "Backup policy '$BackupPolicyName' not found in Recovery Services Vault '$RecoveryServicesVaultName'"
-                    Write-Error $ErrorMessage
-                    Write-LogAnalytics -WorkspaceId $LogAnalyticsWorkspaceId -SharedKey $LogAnalyticsSharedKey -LawWorkspaceName $LawWorkspaceName -LawResourcegroup $LawResourceGroup -ErrorMessage $ErrorMessage
-                    continue
-                }
+        # Get the Recovery Services Vault with the given name
+        $VaultAndPolicies = Get-RecoveryServicesVaultAndBackupPolicies -VaultName $RecoveryServicesVaultName -ErrorAction SilentlyContinue
 
-                # Get the existing backup policy
-                $Container = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM -FriendlyName $Vm.Name -VaultId $RecoveryServicesVault.Id
-                $ExistingBackupPolicy = Get-AzRecoveryServicesBackupItem -WorkloadType AzureVM -Container $Container -VaultId $RecoveryServicesVault.Id | Select-Object ProtectionPolicyName, PolicyId
-
-                # Check if the existing backup policy differs from the policy defined in the VM tags
-                if ($ExistingBackupPolicy.PolicyId -ne $BackupPolicy.Id) {
-                    $DifferenceMessage = "The backup policy assigned to VM '$($Vm.Name)' differs from the one defined in the VM tags: '$($ExistingBackupPolicy.Name)' vs '$BackupPolicyName'"
-                    Write-Warning $DifferenceMessage
-                    Write-LogAnalytics -WorkspaceId $LogAnalyticsWorkspaceId -SharedKey $LogAnalyticsSharedKey -DifferenceMessage $DifferenceMessage
-                }
-                # Assign the backup policy to the VM
-                try {
-                    Enable-AzRecoveryServicesBackupProtection -Policy $BackupPolicy -ErrorAction Stop -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $RecoveryServicesVault.Id
-                }
-                catch {
-                    $ErrorMessage = "Failed to assign backup policy '$BackupPolicyName' to VM '$($Vm.Name)': $($_.Exception.Message)"
-                    Write-Error $ErrorMessage
-                    Write-LogAnalytics -WorkspaceId $LogAnalyticsWorkspaceId -SharedKey $LogAnalyticsSharedKey -LawWorkspaceName $LawWorkspaceName -LawResourcegroup $LawResourceGroup -ErrorMessage $ErrorMessage
-                    continue
-                }
-
-                # Log success message
-                $SuccessMessage = "Assigned backup policy '$BackupPolicyName' to VM '$($Vm.Name)'"
-                Write-Host $SuccessMessage
-            }
+        # Continue if the Vault or Policies are not found
+        if ($null -eq $VaultAndPolicies.RecoveryServicesVault -or $null -eq $VaultAndPolicies.BackupPolicies) {
+          Write-CustomMessage -Message "Either Recovery Services Vault or Backup policies were not found for '$RecoveryServicesVaultName'" -Type Error
+          continue
         }
-    }
-}
 
-function Get-RecoveryServicesVaultAndBackupPolicies {
-    param(
-        [string]$ResourceGroupName,
-        [string]$VaultName
-    )
-
-    $RecoveryServicesVault = Get-AzRecoveryServicesVault -ResourceGroupName $ResourceGroupName -Name $VaultName
-
-    $BackupPolicies = Get-AzRecoveryServicesBackupProtectionPolicy -Vault $RecoveryServicesVault.Id | Select-Object -Property Name, Id
-
-    return @{
-        RecoveryServicesVault = $RecoveryServicesVault
-        BackupPolicies        = $BackupPolicies
-    }
-}
-
-function Write-LogAnalytics {
-    param (
-        [string]$LawWorkspaceName,
-        [string]$LawResourcegroup,
-        [string]$ErrorMessage,
-        [string]$DifferenceMessage,
-        [string]$SuccessMessage
-    )
-    # Check if the Azure PowerShell module is installed
-    if ((Get-Module -Name Az -ListAvailable) -eq $null) {
-        Write-Warning "Azure PowerShell module not installed. Cannot log to Log Analytics."
-        return
-    }
-
-    # Create the Log Analytics record
-    $Record = @{ 
-        TimeGenerated     = Get-Date -Format "yyyy-MM-ddTHH:mm:ssZ"
-        ErrorMessage      = $ErrorMessage 
-        DifferenceMessage = $DifferenceMessage
-        SuccessMessage    = $SuccessMessage
-    }
-
-    # Convert the record to JSON
-    $RecordJson = ConvertTo-Json $Record
-
-    # Send the Log Analytics record
-    try {
-        $LogAnalyticsCustomerId = (Get-AzOperationalInsightsWorkspace -ResourceGroupName $LawResourcegroup -Name $LawWorkspaceName).CustomerId
-        $LogAnalyticsSharedKey = (Get-AzOperationalInsightsWorkspaceSharedKey -ResourceGroupName $LawResourcegroup -Name $LawWorkspaceName).PrimarySharedKey
-        $LogType = "CustomLog"
-        $jsonBody = [System.Text.Encoding]::UTF8.GetBytes($RecordJson)
-        $date = [System.DateTime]::UtcNow.ToString("r")
-        $signature = Build-Signature -customerId $LogAnalyticsCustomerId -sharedKey $LogAnalyticsSharedKey -date $date -contentLength $jsonBody.Length -method "POST" -contentType "application/json" -resource "/api/logs"
-        $uri = "https://" + $LogAnalyticsCustomerId + ".ods.opinsights.azure.com/api/logs?api-version=2016-04-01"
-        $headers = @{
-            "Authorization"        = $signature
-            "Log-Type"             = $LogType
-            "x-ms-date"            = $date
-            "time-generated-field" = "TimeGenerated"
+        # Check if the Recovery Services Vault is in the same location as the VM
+        if ($VaultAndPolicies.RecoveryServicesVault.Location -ne $VmLocation) {
+          Write-CustomMessage -Message "Recovery Services Vault '$RecoveryServicesVaultName' is not in the same location as VM '$($Vm.Name)'" -Type Error
+          continue
         }
-        $response = Invoke-RestMethod -Uri $uri -Method 'Post' -Headers $headers -Body ([System.Text.Encoding]::UTF8.GetBytes($RecordJson))
-        return $response.StatusCode
-    }
-    catch {
-        Write-Warning "Failed to log to Log Analytics: $($_.Exception.Message)"
-        return
-    }
-}
 
-function Build-Signature {
-    param(
-        [string]$customerId,
-        [string]$sharedKey,
-        [string]$date,
-        [int]$contentLength,
-        [string]$method,
-        [string]$contentType,
-        [string]$resource
-    )
+        # Update the Recovery Services Vault in the VM info object
+        $VmInfo.RecoveryServicesVault = $VaultAndPolicies.RecoveryServicesVault.Name
 
-    $xHeaders = "x-ms-date:$date"
-    $stringToHash = "$method`n$contentLength`n$contentType`n$xHeaders`n$resource"
-    $bytesToHash = [Text.Encoding]::UTF8.GetBytes($stringToHash)
-    $keyBytes = [Convert]::FromBase64String($sharedKey)
-    $sha256 = New-Object System.Security.Cryptography.HMACSHA256
-    $sha256.Key = $keyBytes
-    $calculatedHash = $sha256.ComputeHash($bytesToHash)
-    $encodedHash = [Convert]::ToBase64String($calculatedHash)
-    $authorization = 'SharedKey {0}:{1}' -f $customerId, $encodedHash
-    return $authorization
-}
+        # Get the backup policy with the given name in the Recovery Services Vault
+        $Policy = $VaultAndPolicies.BackupPolicies | Where-Object { $_.Name -eq $BackupPolicyName }
+        $BackupPolicy = Get-AzRecoveryServicesBackupProtectionPolicy -Vault $VaultAndPolicies.RecoveryServicesVault.Id -Name $Policy.Name -ErrorAction SilentlyContinue
 
-function Search-LogAnalyticsWorkspace {
-    param(
-        [string]$WorkspaceName,
-        [string]$ResourceGroup,
-        [string]$CurrentSubscriptionName
-    )
+        # Continue if the Backup Policy is not found
+        if ($null -eq $BackupPolicy) {
+          Write-CustomMessage -Message "Backup policy '$BackupPolicyName' not found in Recovery Services Vault '$RecoveryServicesVaultName'" -Type Error
+          continue
+        }
 
-    # Iterate over all subscriptions
-    $Subscriptions = Get-AzSubscription
+        # Update the Backup Policy in the VM info object
+        $VmInfo.BackupPolicy = $BackupPolicy.Name
 
-    foreach ($Subscription in $Subscriptions) {
-        # Check if the subscription is the current subscription
-        if ($Subscription.Name -eq $CurrentSubscriptionName) {
-            # Select the current subscription
-            Select-AzSubscription -SubscriptionId $Subscription.Id
+        # Get the existing backup policy
+        $VaultId = $VaultAndPolicies.RecoveryServicesVault.Id.ToString()
+        $Container = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM -FriendlyName $Vm.Name -VaultId $VaultId
+        $ExistingBackupPolicy = Get-AzRecoveryServicesBackupItem -WorkloadType AzureVM -Container $Container -VaultId $VaultId | Select-Object ProtectionPolicyName, PolicyId
+
+        # Check if the VM is already being backed up
+        if ($null -ne $ExistingBackupPolicy.ProtectionPolicyName) {
+          Write-CustomMessage -Message "The VM '$($Vm.Name)' in Subscription: '$($Subscription.Name)' is already being backed up by policy '$($ExistingBackupPolicy.ProtectionPolicyName)'" -Type Information
+
+          # Update the backup policy and protection status in the VM info object
+          $VmInfo.BackupPolicy = $ExistingBackupPolicy.ProtectionPolicyName
+          $VmInfo.IsProtected = $true
+        }
+
+        # Try to assign the backup policy to the VM
+        $BackupAssignmentResult = Enable-AzRecoveryServicesBackupProtection -Policy $BackupPolicy -ErrorAction SilentlyContinue -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $VaultId
+
+        # If the assignment failed, try to assign the "EnhancedPolicy"
+        if ($null -eq $BackupAssignmentResult) {
+          Write-CustomMessage -Message "Failed to assign backup policy '$BackupPolicyName' to VM '$($Vm.Name)', trying EnhancedPolicy..." -Type Warning
+  
+          $EnhancedPolicy = $VaultAndPolicies.BackupPolicies | Where-Object { $_.Name -eq "EnhancedPolicy" }
+
+          if ($null -eq $EnhancedPolicy) {
+            Write-CustomMessage -Message "EnhancedPolicy not found in Recovery Services Vault '$RecoveryServicesVaultName', skipping ...." -Type Error
+            continue
+          }
+
+          $EnhancedPolicyAssignmentResult = Enable-AzRecoveryServicesBackupProtection -Policy $EnhancedPolicy -ErrorAction SilentlyContinue -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $VaultId
+
+          if ($null -ne $EnhancedPolicyAssignmentResult) {
+            $Vm.Tags.BackupPolicy = "EnhancedPolicy"
+            Update-AzTag -ResourceId $Vm.Id -Tag $Vm.Tags -Operation Merge -ErrorAction SilentlyContinue | Out-Null
+            Write-CustomMessage -Message "Assigned EnhancedPolicy to VM '$($Vm.Name)'" -Type Information
+
+            # Update the backup policy and protection status in the VM info object
+            $VmInfo.BackupPolicy = "EnhancedPolicy"
+            $VmInfo.IsProtected = $true
+          }
         }
         else {
-            # Skip the subscription
-            continue
-        }
+          # Log success message
+          Write-CustomMessage -Message "Assigned backup policy '$BackupPolicyName' to VM '$($Vm.Name)'" -Type Information
 
-        # Check if the Log Analytics workspace exists
-        $LogAnalyticsWorkspace = Get-AzOperationalInsightsWorkspace -ResourceGroupName $ResourceGroup -Name $WorkspaceName -ErrorAction SilentlyContinue
-
-        if ($LogAnalyticsWorkspace -ne $null) {
-            # Return the Log Analytics workspace
-            return $LogAnalyticsWorkspace
+          # Update the backup policy and protection status in the VM info object
+          $VmInfo.BackupPolicy = $BackupPolicyName
+          $VmInfo.IsProtected = $true
         }
+      }
+
+      # Add the VM info object to the array
+      $VmInfoArray += $VmInfo
     }
+  }
+
+  # Output the VM info array as a table
+  $VmInfoArray | Format-Table -AutoSize
 }

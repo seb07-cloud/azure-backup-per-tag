@@ -1,3 +1,5 @@
+# if resource group does not exist, create it
+
 data "azurerm_resource_group" "this" {
   name = var.resource_group_name
 }
