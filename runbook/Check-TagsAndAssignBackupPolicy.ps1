@@ -98,20 +98,21 @@ function Check-TagsAndAssignBackupPolicy {
         # Check if the VM is already being backed up
         $VmInfo.IsProtected = -not $ExistingBackupPolicy.ProtectionPolicyName.IsNullorEmpty
 
+        $BackupAssignmentResult = Enable-AzRecoveryServicesBackupProtection -Policy $BackupPolicy -ErrorAction SilentlyContinue -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $VaultId
+
         $VmInfo.BackupPolicy = $VmInfo.IsProtected ? 
           ($ExistingBackupPolicy.ProtectionPolicyName) : 
-          ($null -ne (Enable-AzRecoveryServicesBackupProtection -Policy $BackupPolicy -ErrorAction SilentlyContinue -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $VaultId) ? $BackupPolicy.Name : $null)
+          ($null -ne $BackupAssignmentResult ? $BackupPolicy.Name : $null)
 
         if ($VmInfo.IsProtected) {
           Write-CustomMessage -Message "The VM '$($Vm.Name)' in Subscription: '$($Subscription.Name)' is already being backed up by policy '$($ExistingBackupPolicy.ProtectionPolicyName)'" -Type Information
-          continue
         }
 
-        $EnhancedPolicy = $null -eq $BackupAssignmentResult -and $Vm.Tags.BackupPolicy -ne "EnhancedPolicy" ? 
+        $EnhancedPolicy = $null -eq $BackupAssignmentResult -and $Vm.Tags.BackupPolicy -eq "DefaultPolicy" ? 
           ($VaultAndPolicies.BackupPolicies | Where-Object { $_.Name -eq "EnhancedPolicy" }) : 
           $null
 
-        $Message = $null -eq $BackupAssignmentResult ? 
+        $Message = $null -eq $BackupAssignmentResult -and $Vm.Tags.BackupPolicy -ne "EnhancedPolicy" ?
           ("Failed to assign backup policy '$($Vm.Tags.BackupPolicy)' to VM '$($Vm.Name)', trying EnhancedPolicy...") : 
           ("Assigned backup policy '$($Vm.Tags.BackupPolicy)' to VM '$($Vm.Name)'")
 
