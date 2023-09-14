@@ -1,11 +1,13 @@
+################################################## Starter Function ###################################################
+
 function Check-TagsAndAssignBackupPolicy {
   param(
     [Parameter(Mandatory = $false)]
-    [string[]]$ExcludedSubscriptionIds = @()
+    [string[]]$IncludedSubscriptionIds = @()
   )
 
   # Get all subscriptions excluding the ones provided in the excluded list
-  $Subscriptions = Get-AzSubscription | Where-Object { $ExcludedSubscriptionIds -notcontains $_.Id }
+  $Subscriptions = Get-AzSubscription | Where-Object { $IncludedSubscriptionIds -contains $_.Id }
 
   # Create an empty array to store the VM information
   $VmInfoArray = @()
@@ -132,3 +134,7 @@ function Check-TagsAndAssignBackupPolicy {
   # Output the VM info array as a table
   $VmInfoArray | Format-Table -AutoSize
 }
+
+################################################## Call Function ###################################################
+
+Check-TagsAndAssignBackupPolicy -$IncludedSubscriptionIds@("")

@@ -1,3 +1,5 @@
+################################################## Helper Functions ##################################################
+
 function Get-RecoveryServicesVaultAndBackupPolicies {
   param(
     [Parameter(Mandatory = $true)]
@@ -52,5 +54,3 @@ function Write-CustomMessage {
   # Invoke the cmdlet from the hashtable with the message as a parameter
   & $typeCmdletMap[$Type] $Message
 }
-
-

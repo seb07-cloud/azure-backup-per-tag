@@ -34,3 +34,8 @@ override.tf.json
 terraform.rc
 
 .DS_Store
+
+# Ignore all certificate files
+*.pem
+*.pfx
+*.key
