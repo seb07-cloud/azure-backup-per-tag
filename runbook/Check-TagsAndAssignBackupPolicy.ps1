@@ -79,7 +79,13 @@ function Check-TagsAndAssignBackupPolicy {
         # Get the existing backup policy
         $VaultId = $VaultAndPolicies.RecoveryServicesVault.Id.ToString()
         $Container = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM -FriendlyName $Vm.Name -VaultId $VaultId
-        $ExistingBackupPolicy = Get-AzRecoveryServicesBackupItem -WorkloadType AzureVM -Container $Container -VaultId $VaultId | Select-Object ProtectionPolicyName, PolicyId
+
+        if ($Container.IsNullorEmpty -eq $false) {
+          $ExistingBackupPolicy = Get-AzRecoveryServicesBackupItem -WorkloadType AzureVM -Container $Container -VaultId $VaultId | Select-Object ProtectionPolicyName, PolicyId
+        }
+        else{
+          $ExistingBackupPolicy = $null
+        }
 
         # Check if the VM is already being backed up
         if ($null -ne $ExistingBackupPolicy.ProtectionPolicyName) {
@@ -138,3 +144,4 @@ function Check-TagsAndAssignBackupPolicy {
 ################################################## Call Function ###################################################
 
 Check-TagsAndAssignBackupPolicy -$IncludedSubscriptionIds@("")
+
