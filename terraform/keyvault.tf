@@ -15,6 +15,7 @@ resource "azurerm_key_vault" "kv" {
   tenant_id           = data.azuread_client_config.current.tenant_id
 
   sku_name = "standard"
+  purge_protection_enabled = false
 
   network_acls {
     default_action = "Deny"
@@ -75,16 +76,20 @@ resource "azurerm_key_vault_access_policy" "kv_spn_ap" {
   tenant_id = data.azuread_client_config.current.tenant_id
   object_id = azuread_service_principal.spn.object_id
 
-  certificate_permissions = ["List", "Create", "Get", "Delete"]
+  secret_permissions = ["Delete", "Get", "List", "Purge", "Set"]
+
+  certificate_permissions = ["Get", "List", "Create", "Delete", "Update"]
 }
 
-resource "azurerm_key_vault_access_policy" "kv_current_ap" {
+resource "azurerm_key_vault_access_policy" "kv_current_principal" {
   key_vault_id = azurerm_key_vault.kv.id
 
   tenant_id = data.azuread_client_config.current.tenant_id
   object_id = data.azurerm_client_config.current.object_id
 
-  certificate_permissions = ["List", "Create", "Get", "Delete"]
+  secret_permissions = ["Delete", "Get", "List", "Purge", "Set"]
+
+  certificate_permissions = ["Get", "List", "Create", "Delete", "Update"]
 }
 
 
