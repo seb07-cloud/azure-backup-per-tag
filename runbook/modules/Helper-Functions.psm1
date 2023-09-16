@@ -22,31 +22,45 @@ function Get-RecoveryServicesVaultAndBackupPolicies {
     [string]$Location,
 
     [Parameter(Mandatory = $true)]
-    [string]$PolicyName
+    [string]$PolicyName,
+
+    [Parameter(Mandatory = $false)]
+    [bool]$EnhancedPolicy
   )
 
   # Get the Recovery Services Vault
   $RecoveryServicesVault = Get-AzRecoveryServicesVault -Name $VaultName
-  if (-not $RecoveryServicesVault) {
-    return @{
-      RecoveryServicesVault = $false
-      BackupPolicies        = $false
-      LocationMatch         = $false
-      Policy                = $false
+
+  if ($RecoveryServicesVault) {
+
+    $PolicyName = $EnhancedPolicy -eq $true ? 'EnhancedPolicy' : $PolicyName
+    
+    # Get the backup policies in the Recovery Services Vault
+    $BackupPolicies = Get-AzRecoveryServicesBackupProtectionPolicy -Vault $RecoveryServicesVault.Id
+
+    # Get the backup policy with the given name
+    $Policy = $BackupPolicies | Where-Object { $_.Name -eq $PolicyName }
+
+    # Check if the Location of the Vault matches the given Location of the VM
+    $RecoveryServicesVaultLocationMatch = $Location -match $RecoveryServicesVault.Location ? $true : $false
+
+    if ($Policy.Name -or $RecoveryServicesVaultLocationMatch) {
+
+      $policyBase = New-Object 'Microsoft.Azure.Commands.RecoveryServices.Backup.Cmdlets.Models.PolicyBase'
+      $policyBase | Add-Member -MemberType NoteProperty -Name $Policy.Name -Value $Policy
+
+      return @{
+        RecoveryServicesVault             = $RecoveryServicesVault
+        RecoveryServicesVaultLocation     = $RecoveryServicesVault.Location
+        AllBackupPolicies                 = $BackupPolicies.Name
+        RecoveryServiceVaultLocationMatch = $RecoveryServicesVaultLocationMatch
+        Policy                            = $null -ne $Policy ? $policyBase : $false
+        PolicyName                        = $Policy.Name
+      }
     }
   }
-
-  # Get the backup policies in the Recovery Services Vault
-  $BackupPolicies = Get-AzRecoveryServicesBackupProtectionPolicy -Vault $RecoveryServicesVault.Id
-
-  # Get the backup policy with the given name
-  $Policy = $BackupPolicies | Where-Object { $_.Name -eq $PolicyName }
-
-  return @{
-    RecoveryServicesVault = $RecoveryServicesVault
-    BackupPolicies        = $BackupPolicies
-    LocationMatch         = $RecoveryServicesVault.Location -eq $Location ? $true : $false
-    Policy                = $Policy -ne $null ? $Policy : $false
+  else {
+    return $false
   }
 }
 

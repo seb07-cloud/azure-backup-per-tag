@@ -8,6 +8,9 @@ This script checks the tags of Azure virtual machines in the specified subscript
 .PARAMETER IncludedSubscriptionIds
 An array of subscription IDs to include in the backup policy assignment. If not specified, the script will include all subscriptions that the authenticated user has access to.
 
+.PARAMETER All
+If specified, the script will include all subscriptions that the authenticated user has access to.
+
 .EXAMPLE
 Check-TagsAndAssignBackupPolicy.ps1 -IncludedSubscriptionIds "12345678-1234-1234-1234-123456789012", "23456789-2345-2345-2345-234567890123"
 
@@ -18,7 +21,7 @@ This script requires the Azure PowerShell module to be installed and authenticat
 #>
 
 param (
-  [Parameter(Mandatory = $true)]
+  [Parameter(Mandatory = $false)]
   [array]$IncludedSubscriptionIds,
 
   [Parameter(Mandatory = $false)]
@@ -29,123 +32,112 @@ param (
 function Check-TagsAndAssignBackupPolicy {
   param(
     [Parameter(Mandatory = $false)]
-    [string[]]$IncludedSubscriptionIds = @(),
+    [string[]]$IncludedSubscriptionIds,
 
     [Parameter(Mandatory = $false)]
     [switch]$All
   )
+  Begin {
 
-  if ($All) {
-    $IncludedSubscriptionIds = Get-AzSubscription | Select-Object -ExpandProperty Id
+    if ($PSBoundParameters.ContainsKey('All') -and $PSBoundParameters.ContainsKey('IncludedSubscriptionIds')) {
+      Write-CustomMessage -Message "The -All and -IncludedSubscriptionIds parameters cannot be used together!" -Type Error
+      return
+    }
+    elseif ($PSBoundParameters.ContainsKey('All')) {
+      $Subscriptions = Get-AzSubscription
+    }
+    else {
+      $Subscriptions = $IncludedSubscriptionIds | ForEach-Object { Get-AzSubscription -SubscriptionId $_ }
+    }
   }
-  else {
-    # Get all subscriptions excluding the ones provided in the excluded list
-    $Subscriptions = Get-AzSubscription | Where-Object { $IncludedSubscriptionIds -contains $_.Id }  
-  }
 
-  # Create an empty array to store the VM information
-  $VmInfoArray = @()
+  Process {
 
-  # Loop through each subscription
-  foreach ($Subscription in $Subscriptions) {
+    # Create an empty array to store the VM information
+    $VmInfoArray = [System.Collections.ArrayList]::new()
 
-    # Import Module
-    Import-Module -Name ./modules/*.psm1 -Force
+    # Loop through each subscription
+    foreach ($Subscription in $Subscriptions) {
 
-    # Select the subscription
-    Set-AzContext -Subscription $Subscription.Id | Out-Null
+      # Get all VMs in the subscription
+      $Vms = Get-AzVM
 
-    # Get all VMs in the subscription
-    $Vms = Get-AzVM
-
-    # Loop through each VM
-    foreach ($Vm in $Vms) {
-
-      # Create a custom object for the VM
-      $VmInfo = New-Object PSObject
-      $VmInfo | Add-Member -MemberType NoteProperty -Name "VmName" -Value $Vm.Name
-      $VmInfo | Add-Member -MemberType NoteProperty -Name "BackupPolicy" -Value $null
-      $VmInfo | Add-Member -MemberType NoteProperty -Name "IsProtected" -Value $false
-      $VmInfo | Add-Member -MemberType NoteProperty -Name "RecoveryServicesVault" -Value $null
-      $VmInfo | Add-Member -MemberType NoteProperty -Name "Subscription" -Value $Subscription.Name
-
-      # Check if the "RecoveryServicesVault" and "BackupPolicy" tags are defined on the VM
-      if ($Vm.Tags.RecoveryServicesVault -and $Vm.Tags.BackupPolicy) {
-
-        # Get the Recovery Services Vault with the given name
-        $VaultAndPolicies = Get-RecoveryServicesVaultAndBackupPolicies -VaultName $($Vm.Tags.RecoveryServicesVault) -Location $Vm.Location -PolicyName $Vm.Tags.BackupPolicy -ErrorAction SilentlyContinue
-
-        # Continue if the Vault or Policies are not found
-        if ($VaultAndPolicies.Values -contains $false) {
-          Write-CustomMessage -Message "Either Recovery Services Vault or Backup policies were not found for '$($Vm.Name)' or the location doesnt match!" -Type Error
-          continue
-        }
-        
-        # Update the Recovery Services Vault in the VM info object
-        $VmInfo.RecoveryServicesVault = $VaultAndPolicies.RecoveryServicesVault.Name
-
-        # Update the Backup Policy in the VM info object
-        $VmInfo.BackupPolicy = $BackupPolicy.Name
-
-        # Get the existing backup policy
-        $VaultId = $VaultAndPolicies.RecoveryServicesVault.Id.ToString()
-        $Container = Get-AzRecoveryServicesBackupContainer -ContainerType AzureVM -FriendlyName $Vm.Name -VaultId $VaultId
-
-        $ExistingBackupPolicy = $Container.IsNullorEmpty ? 
-          $null :
-          (Get-AzRecoveryServicesBackupItem -WorkloadType AzureVM -Container $Container -VaultId $VaultId | Select-Object ProtectionPolicyName, PolicyId) 
+      # Loop through each VM
+      foreach ($Vm in $Vms) {
 
         # Check if the VM is already being backed up
-        $VmInfo.IsProtected = -not $ExistingBackupPolicy.ProtectionPolicyName.IsNullorEmpty
+        $currentBackupStatus = Get-AzRecoveryServicesBackupStatus -Name $vm.Name -ResourceGroupName $vm.ResourceGroupName -Type 'AzureVM' -ErrorAction SilentlyContinue
 
-        $BackupAssignmentResult = Enable-AzRecoveryServicesBackupProtection -Policy $BackupPolicy -ErrorAction SilentlyContinue -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $VaultId
+        # Check if the "RecoveryServicesVault" and "BackupPolicy" tags are defined on the VM
+        if ($Vm.Tags.RecoveryServicesVault -and $Vm.Tags.BackupPolicy -and -not $currentBackupStatus.BackedUp) {
 
-        $VmInfo.BackupPolicy = $VmInfo.IsProtected ? 
-          ($ExistingBackupPolicy.ProtectionPolicyName) : 
-          ($null -ne $BackupAssignmentResult ? $BackupPolicy.Name : $null)
+          # if trusted launch is enabled, set switch -EnhancedPolicy to $true
+          $PolicyName = $vm.SecurityProfile.SecurityType -eq "TrustedLaunch" ? 'EnhancedPolicy' : $Vm.Tags.BackupPolicy 
 
-        if ($VmInfo.IsProtected) {
-          Write-CustomMessage -Message "The VM '$($Vm.Name)' in Subscription: '$($Subscription.Name)' is already being backed up by policy '$($ExistingBackupPolicy.ProtectionPolicyName)'" -Type Information
-        }
+          $RecoveryServicesVault = Get-AzRecoveryServicesVault -Name $Vm.Tags.RecoveryServicesVault
 
-        $EnhancedPolicy = $null -eq $BackupAssignmentResult -and $Vm.Tags.BackupPolicy -eq "DefaultPolicy" ? 
-          ($VaultAndPolicies.BackupPolicies | Where-Object { $_.Name -eq "EnhancedPolicy" }) : 
-          $null
+          if ($RecoveryServicesVault) {
 
-        $Message = $null -eq $BackupAssignmentResult -and $Vm.Tags.BackupPolicy -ne "EnhancedPolicy" ?
-          ("Failed to assign backup policy '$($Vm.Tags.BackupPolicy)' to VM '$($Vm.Name)', trying EnhancedPolicy...") : 
-          ("Assigned backup policy '$($Vm.Tags.BackupPolicy)' to VM '$($Vm.Name)'")
+            # Get the backup policies in the Recovery Services Vault
+            $BackupPolicies = Get-AzRecoveryServicesBackupProtectionPolicy -Vault $RecoveryServicesVault.Id
 
-        Write-CustomMessage -Message $Message -Type ($null -eq $BackupAssignmentResult ? 'Warning' : 'Information')
+            # Find the backup policy with the given name
+            $Policy = $BackupPolicies | Where-Object { $_.Name -eq $PolicyName }
 
-        if ($null -eq $BackupAssignmentResult -and $null -ne $EnhancedPolicy) {
-          $EnhancedPolicyAssignmentResult = Enable-AzRecoveryServicesBackupProtection -Policy $EnhancedPolicy -ErrorAction SilentlyContinue -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $VaultId
-          $Vm.Tags.BackupPolicy = $null -ne $EnhancedPolicyAssignmentResult ? "EnhancedPolicy" : $Vm.Tags.BackupPolicy
-          $VmInfo.BackupPolicy = $Vm.Tags.BackupPolicy
-          $VmInfo.IsProtected = $null -ne $EnhancedPolicyAssignmentResult
-          Write-CustomMessage -Message ($VmInfo.IsProtected ? "Assigned EnhancedPolicy to VM '$($Vm.Name)'" : "EnhancedPolicy not found in Recovery Services Vault '$($Vm.Tags.RecoveryServicesVault)', skipping ....") -Type ($VmInfo.IsProtected ? 'Information' : 'Error')
-          if ($VmInfo.IsProtected) {
-            Update-AzTag -ResourceId $Vm.Id -Tag $Vm.Tags -Operation Merge -ErrorAction SilentlyContinue | Out-Null
+            # Check if the Location of the Vault matches the given Location of the VM
+            $RecoveryServicesVaultLocationMatch = $Vm.Location -match $RecoveryServicesVault.Location ? $true : $false
+
+            if ($RecoveryServicesVaultLocationMatch -and $Policy.Name) {
+              $policyBase = New-Object 'Microsoft.Azure.Commands.RecoveryServices.Backup.Cmdlets.Models.PolicyBase'
+              $policyBase | Add-Member -MemberType NoteProperty -Name $Policy.Name -Value $Policy
+            }
+            else {
+              $PolicyAssignmentFailure = "The Recovery Services Vault location does not match the location of the VM!"
+            }
+          }
+          try {
+            if (-not $PolicyAssignmentFailure) {
+              Enable-AzRecoveryServicesBackupProtection -Policy $policyBase -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $($RecoveryServicesVault.Id.ToString())
+            }
+          }
+          catch {
+            $PolicyAssignmentFailure = $_.Exception.Message
           }
         }
-        else {
-          $VmInfo.BackupPolicy = $Vm.Tags.BackupPolicy
-          $VmInfo.IsProtected = $true
-        }
-      }       
-      else {
-        Write-CustomMessage -Message "Either RecoveryServicesVault or BackupPolicy tags are not defined on VM '$($Vm.Name)'" -Type Warning
+
+        [void]$VmInfoArray.Add([PSCustomObject]@{
+            VmName                            = $Vm.Name
+            VmLocation                        = $Vm.Location
+            AlreadyBackedUp                   = $currentBackupStatus.BackedUp
+            BackupPolicy                      = $null -ne $VaultAndPolicies.PolicyName ? $VaultAndPolicies.PolicyName : $vm.Tags.BackupPolicy
+            TagsSet                           = $Vm.Tags.BackupPolicy -and $Vm.Tags.RecoveryServicesVault ? $true :$false
+            RecoveryServicesVault             = $false -ne $VaultAndPolicies.RecoveryServicesVault ? $VaultAndPolicies.RecoveryServicesVault.Name : ($currentBackupStatus.VaultId -split "/" | Select-Object -Last 1)
+            RecoveryServicesVaultLocation     = $VaultAndPolicies.RecoveryServicesVaultLocation
+            RecoveryServiceVaultLocationMatch = $VaultAndPolicies.RecoveryServiceVaultLocationMatch
+            Subscription                      = $Subscription.Name
+            ErrorMessage                      = $null -ne $PolicyAssignmentFailure ? $PolicyAssignmentFailure : $null
+          })
       }
-
-      # Add the VM info object to the array
-      $VmInfoArray += $VmInfo
-
-      # Output the VM info array as a table
-      $VmInfoArray | Format-Table -AutoSize
     }
+  }
+  End {
+    $VmInfoArray
   }
 }
 
 ################################################## Call Function ###################################################
-Check-TagsAndAssignBackupPolicy -IncludedSubscriptionIds $IncludedSubscriptionIds
+$functionParams = @{}
+
+if ($All) {
+  $functionParams['All'] = $true
+}
+elseif ($IncludedSubscriptionIds) {
+  $functionParams['IncludedSubscriptionIds'] = $IncludedSubscriptionIds
+}
+else {
+  throw "You must specify either the -All or -IncludedSubscriptionIds parameter!"
+}
+
+Check-TagsAndAssignBackupPolicy @functionParams
+
 
