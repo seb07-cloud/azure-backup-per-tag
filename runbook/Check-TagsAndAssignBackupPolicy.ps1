@@ -69,7 +69,7 @@ function Check-TagsAndAssignBackupPolicy {
         $currentBackupStatus = Get-AzRecoveryServicesBackupStatus -Name $vm.Name -ResourceGroupName $vm.ResourceGroupName -Type 'AzureVM' -ErrorAction SilentlyContinue
 
         # Check if the "RecoveryServicesVault" and "BackupPolicy" tags are defined on the VM
-        if ($Vm.Tags.RecoveryServicesVault -and $Vm.Tags.BackupPolicy -and -not $currentBackupStatus.BackedUp) {
+        if ($Vm.Tags.RecoveryServicesVault -and $Vm.Tags.BackupPolicy) {
 
           # if trusted launch is enabled, set switch -EnhancedPolicy to $true
           $PolicyName = $vm.SecurityProfile.SecurityType -eq "TrustedLaunch" ? 'EnhancedPolicy' : $Vm.Tags.BackupPolicy 
@@ -79,29 +79,27 @@ function Check-TagsAndAssignBackupPolicy {
           if ($RecoveryServicesVault) {
 
             # Get the backup policies in the Recovery Services Vault
-            $BackupPolicies = Get-AzRecoveryServicesBackupProtectionPolicy -Vault $RecoveryServicesVault.Id
+            $BackupPolicy = Get-AzRecoveryServicesBackupProtectionPolicy -Vault $RecoveryServicesVault.Id -Name $PolicyName
 
-            # Find the backup policy with the given name
-            $Policy = $BackupPolicies | Where-Object { $_.Name -eq $PolicyName }
-
-            # Check if the Location of the Vault matches the given Location of the VM
-            $RecoveryServicesVaultLocationMatch = $Vm.Location -match $RecoveryServicesVault.Location ? $true : $false
-
-            if ($RecoveryServicesVaultLocationMatch -and $Policy.Name) {
-              $PolicyBase = New-Object 'Microsoft.Azure.Commands.RecoveryServices.Backup.Cmdlets.Models.PolicyBase'
-              $PolicyBase | Add-Member -MemberType NoteProperty -Name $Policy.Name -Value $Policy
-            }
-            else {
-              $PolicyAssignmentFailure = "The Recovery Services Vault location does not match the location of the VM!"
-            }
           }
-          try {
-            if (-not $PolicyAssignmentFailure) {
-              Enable-AzRecoveryServicesBackupProtection -Policy $PolicyBase -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $($RecoveryServicesVault.Id.ToString())
+          if (-not $PolicyAssignmentFailure -and $currentBackupStatus.BackedUp -eq $false -and $BackupPolicy -ne $null) {
+            try {
+
+              # Set Vault context
+              Set-AzRecoveryServicesVaultContext -Vault $RecoveryServicesVault
+              # Enable backup protection
+              $AssignmentStatus = Enable-AzRecoveryServicesBackupProtection -Policy $BackupPolicy -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName
+
+              Write-Host $AssignmentStatus
+
+              # If successful, set PolicyAssignmentSuccessful to $true
+              if ($AssignmentStatus.Status -eq 'Succeeded') {
+                $Status = $true
+              }
             }
-          }
-          catch {
-            $PolicyAssignmentFailure = $_.Exception.Message
+            catch {
+              $PolicyAssignmentFailure = $_.Exception.Message
+            }
           }
         }
 
@@ -109,13 +107,14 @@ function Check-TagsAndAssignBackupPolicy {
             VmName                             = $Vm.Name
             VmLocation                         = $Vm.Location
             AlreadyBackedUp                    = $currentBackupStatus.BackedUp
+            PolicyAssignmentSuccessful         = $currentBackupStatus.BackedUp ? $false : $Status
             BackupPolicy                       = $null -ne $Policy.Name ? $Policy.Name : $vm.Tags.BackupPolicy
             TagsSet                            = $Vm.Tags.BackupPolicy -and $Vm.Tags.RecoveryServicesVault ? $true :$false
             RecoveryServicesVault              = $false -ne $RecoveryServicesVault ? $RecoveryServicesVault.Name : ($currentBackupStatus.VaultId -split "/" | Select-Object -Last 1)
             RecoveryServicesVaultLocation      = $RecoveryServicesVault.Location
             RecoveryServicesVaultLocationMatch = $RecoveryServicesVault.Location -match $Vm.Location ? $true : $false
             Subscription                       = $Subscription.Name
-            ErrorMessage                       = $null -ne $PolicyAssignmentFailure ? $PolicyAssignmentFailure : $null
+            ErrorMessage                       = $PolicyAssignmentFailure
           })
       }
     }
