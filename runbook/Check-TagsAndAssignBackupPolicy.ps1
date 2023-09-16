@@ -88,8 +88,8 @@ function Check-TagsAndAssignBackupPolicy {
             $RecoveryServicesVaultLocationMatch = $Vm.Location -match $RecoveryServicesVault.Location ? $true : $false
 
             if ($RecoveryServicesVaultLocationMatch -and $Policy.Name) {
-              $policyBase = New-Object 'Microsoft.Azure.Commands.RecoveryServices.Backup.Cmdlets.Models.PolicyBase'
-              $policyBase | Add-Member -MemberType NoteProperty -Name $Policy.Name -Value $Policy
+              $PolicyBase = New-Object 'Microsoft.Azure.Commands.RecoveryServices.Backup.Cmdlets.Models.PolicyBase'
+              $PolicyBase | Add-Member -MemberType NoteProperty -Name $Policy.Name -Value $Policy
             }
             else {
               $PolicyAssignmentFailure = "The Recovery Services Vault location does not match the location of the VM!"
@@ -97,7 +97,7 @@ function Check-TagsAndAssignBackupPolicy {
           }
           try {
             if (-not $PolicyAssignmentFailure) {
-              Enable-AzRecoveryServicesBackupProtection -Policy $policyBase -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $($RecoveryServicesVault.Id.ToString())
+              Enable-AzRecoveryServicesBackupProtection -Policy $PolicyBase -Name $Vm.Name -ResourceGroupName $Vm.ResourceGroupName -VaultId $($RecoveryServicesVault.Id.ToString())
             }
           }
           catch {
@@ -106,16 +106,16 @@ function Check-TagsAndAssignBackupPolicy {
         }
 
         [void]$VmInfoArray.Add([PSCustomObject]@{
-            VmName                            = $Vm.Name
-            VmLocation                        = $Vm.Location
-            AlreadyBackedUp                   = $currentBackupStatus.BackedUp
-            BackupPolicy                      = $null -ne $VaultAndPolicies.PolicyName ? $VaultAndPolicies.PolicyName : $vm.Tags.BackupPolicy
-            TagsSet                           = $Vm.Tags.BackupPolicy -and $Vm.Tags.RecoveryServicesVault ? $true :$false
-            RecoveryServicesVault             = $false -ne $VaultAndPolicies.RecoveryServicesVault ? $VaultAndPolicies.RecoveryServicesVault.Name : ($currentBackupStatus.VaultId -split "/" | Select-Object -Last 1)
-            RecoveryServicesVaultLocation     = $VaultAndPolicies.RecoveryServicesVaultLocation
-            RecoveryServiceVaultLocationMatch = $VaultAndPolicies.RecoveryServiceVaultLocationMatch
-            Subscription                      = $Subscription.Name
-            ErrorMessage                      = $null -ne $PolicyAssignmentFailure ? $PolicyAssignmentFailure : $null
+            VmName                             = $Vm.Name
+            VmLocation                         = $Vm.Location
+            AlreadyBackedUp                    = $currentBackupStatus.BackedUp
+            BackupPolicy                       = $null -ne $Policy.Name ? $Policy.Name : $vm.Tags.BackupPolicy
+            TagsSet                            = $Vm.Tags.BackupPolicy -and $Vm.Tags.RecoveryServicesVault ? $true :$false
+            RecoveryServicesVault              = $false -ne $RecoveryServicesVault ? $RecoveryServicesVault.Name : ($currentBackupStatus.VaultId -split "/" | Select-Object -Last 1)
+            RecoveryServicesVaultLocation      = $RecoveryServicesVault.Location
+            RecoveryServicesVaultLocationMatch = $null -eq $RecoveryServicesVaultLocationMatch -and $currentBackupStatus.BackedUp -eq $true ? $true : $RecoveryServicesVaultLocationMatch
+            Subscription                       = $Subscription.Name
+            ErrorMessage                       = $null -ne $PolicyAssignmentFailure ? $PolicyAssignmentFailure : $null
           })
       }
     }
