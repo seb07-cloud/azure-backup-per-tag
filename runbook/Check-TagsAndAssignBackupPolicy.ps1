@@ -113,7 +113,7 @@ function Check-TagsAndAssignBackupPolicy {
             TagsSet                            = $Vm.Tags.BackupPolicy -and $Vm.Tags.RecoveryServicesVault ? $true :$false
             RecoveryServicesVault              = $false -ne $RecoveryServicesVault ? $RecoveryServicesVault.Name : ($currentBackupStatus.VaultId -split "/" | Select-Object -Last 1)
             RecoveryServicesVaultLocation      = $RecoveryServicesVault.Location
-            RecoveryServicesVaultLocationMatch = $null -eq $RecoveryServicesVaultLocationMatch -and $currentBackupStatus.BackedUp -eq $true ? $true : $RecoveryServicesVaultLocationMatch
+            RecoveryServicesVaultLocationMatch = $RecoveryServicesVault.Location -match $Vm.Location ? $true : $false
             Subscription                       = $Subscription.Name
             ErrorMessage                       = $null -ne $PolicyAssignmentFailure ? $PolicyAssignmentFailure : $null
           })
